@@ -11,7 +11,7 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "admin")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "admin12345")
 
 
-def test_connection():
+def check_connection():
     """Test MinIO connection and bucket access."""
     try:
         # Create S3 filesystem connection
@@ -46,6 +46,6 @@ def test_connection():
 
 
 if __name__ == "__main__":
-    success = test_connection()
+    success = check_connection()
     sys.exit(0 if success else 1)
 

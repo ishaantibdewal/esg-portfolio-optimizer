@@ -1,224 +1,127 @@
-# Portfolio Optimizer
+# ESG Portfolio Optimizer
 
-Modern data & research workspace for iterating on ESG-aware portfolio construction. The repo supports a lakehouse-style workflow with bronze → silver ingestion, feature engineering, optimization, and backtesting.
+[![tests](https://github.com/ishaantibdewal/esg-portfolio-optimizer/actions/workflows/tests.yml/badge.svg)](https://github.com/ishaantibdewal/esg-portfolio-optimizer/actions/workflows/tests.yml)
 
-## Current Capabilities
+ESG-aware portfolio construction for the Sustainable Investment Group (SIG), a student-run investment group at UC San Diego. The project answers one question for the fund: **how much risk-adjusted return do we give up to hold a portfolio with a higher ESG score?**
 
-- **Data Lake Infrastructure**: S3/MinIO integration for local and cloud storage
-- **Data Pipeline**: Bronze → Silver → Features → Gold data layers
-- **Schema Enforcement**: JSON contract-driven validation (`src/common/schemas.py`)
-- **Feature Engineering**: Returns, covariances, and ESG normalization
-- **Portfolio Optimization**: Mean-variance optimization with constraints
-- **Backtesting**: Historical performance simulation
-- **Orchestration**: Prefect-based workflow automation
+It has three parts:
 
-## Quick Start
+- **Optimizer.** For each portfolio ESG target, find the long-only portfolio with the highest Sharpe ratio (SciPy, SLSQP). Sweeping the target traces an *ESG-efficient frontier*, which is compared with the unconstrained (Markowitz) maximum-Sharpe portfolio.
+- **Data lake pipeline.** Price and ESG data move through bronze → silver → features → gold layers on MinIO/S3, with JSON schema contracts, Prefect orchestration and a backtesting engine.
+- **API and dashboard.** A FastAPI service serves gold-layer results and runs live optimizations. A Streamlit dashboard lets you pick tickers, set ESG and allocation constraints, and see the frontier, weights, rolling Sharpe and a benchmark comparison.
 
-### Prerequisites
+![ESG-efficient frontier for five stocks, 2025](docs/images/esg_frontier.png)
 
-- Python 3.8+
-- Docker and Docker Compose
-- Virtual environment (recommended)
+On this five-stock universe the frontier is nearly flat from an ESG score of 0.56 to about 0.65: the fund can raise portfolio ESG that far at almost no cost in Sharpe ratio. Above 0.65 the cost rises quickly.
 
-### Initial Setup
+## Backtest
 
-1. **Clone and install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+`research/esg_frontier_backtest.py` rebalances at the start of every quarter, estimating returns and covariances from the previous quarter only, so no future data leaks into a decision.
 
-2. **Set up MinIO (local data lake):**
-   ```bash
-   # Start MinIO container
-   docker-compose up -d minio
-   
-   # Create the lake bucket
-   docker-compose exec minio mc alias set local http://localhost:9000 admin admin12345
-   docker-compose exec minio mc mb local/lake
-   ```
+![Growth of $1 for each strategy, 2020 to 2026](docs/images/backtest.png)
 
-3. **Configure environment:**
-   ```bash
-   cp example.env .env
-   # Edit .env and ensure these are set:
-   # S3_ENDPOINT=http://localhost:9000
-   # LAKE_BUCKET=lake
-   # AWS_ACCESS_KEY_ID=admin
-   # AWS_SECRET_ACCESS_KEY=admin12345
-   ```
+| Strategy (Jan 2020 to Nov 2026) | Annual return | Annual volatility | Sharpe | Max drawdown |
+|:--|--:|--:|--:|--:|
+| ESG target 0.65 | 22.4% | 32.1% | 0.70 | −57.9% |
+| ESG target 0.70 | 22.6% | 26.2% | 0.80 | −41.6% |
+| Max-Sharpe, no ESG target | 17.5% | 32.7% | 0.57 | −57.6% |
+| Equal weight | 29.6% | 28.4% | 0.96 | −45.0% |
+| SPY (buy and hold) | 14.1% | 20.0% | 0.62 | −33.7% |
 
-4. **Verify MinIO is running:**
-   - Console: http://localhost:9001 (admin/admin12345)
-   - API: http://localhost:9000
-   - Check status: `docker-compose ps`
+What this shows, and what it doesn't:
 
-### Running the Pipeline
+- The ESG-0.70 portfolio had lower volatility and a much smaller worst drawdown than the unconstrained optimizer. The ESG target acted as a diversification constraint.
+- Equal weight beat every optimized portfolio. This is a known result: with expected returns estimated from one quarter of data, estimation noise dominates mean-variance optimization ([DeMiguel, Garlappi and Uppal, 2009](https://doi.org/10.1093/rfs/hhm075)). Longer estimation windows or shrinkage estimators are the natural next step.
+- Five stocks over one period, with no transaction costs, is a demonstration of the method, not evidence that ESG targets improve returns.
 
-**Option 1: Full pipeline (Prefect orchestration)**
+Full output: [docs/results.md](docs/results.md).
+
+## Quick start
+
+Requires Python 3.11 or newer.
+
 ```bash
-export $(cat .env | grep -v '^#' | xargs)
-python -m src.orchestration.flow
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-**Option 2: Individual steps**
+**Research script** (needs only internet access for Yahoo Finance data):
+
 ```bash
-# Load environment variables
-export $(cat .env | grep -v '^#' | xargs)
-
-# Ingest raw CSVs to bronze
-python -m src.ingest.to_bronze
-
-# Promote to silver
-python -m src.ingest.bronze_to_silver
-
-# Build features
-python -m src.features.normalize_esg
-python -m src.features.make_returns_cov
-
-# Optimize portfolio
-python -m src.optimize.frontier
-
-# Backtest
-python -m src.backtest.engine
+python research/esg_frontier_backtest.py
+python research/esg_frontier_backtest.py --tickers AAPL MSFT NVDA --esg-scores 0.70 0.80 0.60 --targets 0.72
 ```
 
-## Project Layout
+**API and dashboard:**
 
-```
-data/
-  raw/              # Source CSV files
-src/
-  common/           # IO utilities, schemas, shared code
-  ingest/           # Bronze and silver layer jobs
-  features/         # Feature engineering (returns, covariances, ESG)
-  optimize/         # Portfolio optimization
-  backtest/         # Performance simulation
-  orchestration/    # Prefect workflow definitions
-  contracts/        # JSON schema definitions
-gold/               # Final outputs (portfolios, stats, performance)
-lake/               # Local MinIO data storage
+```bash
+cd frontend
+uvicorn api:app --port 8000          # terminal 1
+streamlit run esg_dashboard.py       # terminal 2, opens http://localhost:8501
 ```
 
-## Data Flow
+**Full data lake pipeline** (needs Docker):
+
+```bash
+docker compose up -d minio
+cp example.env .env && export $(grep -v '^#' .env | xargs)
+python scripts/setup_minio.py                                   # create the lake bucket
+python scripts/fetch_market_data.py --tickers AAPL MSFT GOOGL --days 252 --ingest
+python -m src.orchestration.flow                               # ingest → features → optimize → backtest
+```
+
+The MinIO console runs at http://localhost:9001. The default credentials in `example.env` are for local development only.
+
+## Tests
+
+```bash
+pytest
+```
+
+The tests cover the ESG optimizer, schema contracts, the pipeline and the API's gold-layer endpoints. Data-lake reads are stubbed, so MinIO is not needed. They run on every push via GitHub Actions.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Yahoo Finance<br/>or CSV] --> B[Bronze<br/>raw Parquet]
+    B --> C[Silver<br/>cleaned, schema-checked]
+    C --> D[Features<br/>returns, covariances,<br/>normalized ESG]
+    D --> E[Gold<br/>portfolios, stats,<br/>backtests]
+    E --> F[FastAPI]
+    F --> G[Streamlit dashboard]
+```
 
 ```
-Raw CSVs → Bronze (Parquet) → Silver (Cleaned) → Features → Optimization → Backtest
+frontend/      FastAPI service (api.py), Streamlit dashboard, optimizer module (esg_optimizer.py)
+research/      Frontier and backtest script that produces the figures above
+src/           Data lake pipeline: ingest, features, optimize, backtest, Prefect flow, schema contracts
+scripts/       Data population, MinIO setup, AWS sync
+tests/         pytest suite
+docs/          Setup, MinIO, AWS sync and cloud deployment guides; figures and results
 ```
-
-- **Bronze**: Raw ingested data, partitioned by date
-- **Silver**: Cleaned data with basic transformations (z-scores, schema enforcement)
-- **Features**: Engineered features (returns, covariances, normalized ESG scores)
-- **Gold**: Final outputs (optimized portfolios, statistics, backtest results)
 
 ## Configuration
 
-Environment variables (set in `.env`):
+Set in `.env` (see `example.env`):
 
-- `S3_ENDPOINT`: MinIO/S3 endpoint (default: `http://localhost:9000`)
-- `LAKE_BUCKET`: Bucket name (default: `lake`)
-- `AWS_ACCESS_KEY_ID`: MinIO access key (default: `admin`)
-- `AWS_SECRET_ACCESS_KEY`: MinIO secret key (default: `admin12345`)
-- `COV_WINDOW_DAYS`: Covariance calculation window (default: `20`)
-- `EXPECTED_RETURN_LOOKBACK`: Return lookback period (default: `20`)
-- `RISK_AVERSION`: Risk aversion parameter (default: `5.0`)
-- `WEIGHT_CAP`: Maximum weight per asset (default: `0.07`)
+| Variable | Default | Meaning |
+|:--|:--|:--|
+| `S3_ENDPOINT` | `http://localhost:9000` | MinIO or S3 endpoint |
+| `LAKE_BUCKET` | `lake` | Bucket for all lake layers |
+| `COV_WINDOW_DAYS` | `20` | Covariance estimation window |
+| `EXPECTED_RETURN_LOOKBACK` | `20` | Lookback for expected returns |
+| `RISK_AVERSION` | `5.0` | Mean-variance risk aversion in the pipeline optimizer |
+| `WEIGHT_CAP` | `0.07` | Maximum weight per asset |
 
-## Populating the Data Lake
+More detail: [setup](docs/setup.md), [MinIO](docs/minio-setup.md), [frontend and API](docs/frontend-api.md), [AWS sync](docs/aws-sync.md), [cloud deployment](docs/cloud-deployment.md).
 
-### Option 1: Generate Sample Data
+## Team
 
-Generate synthetic data for testing:
+Built by SIG's R&D team at UC San Diego. This is a public copy of the team repository.
 
-```bash
-# Generate data for 50 assets over 1 year (252 trading days)
-python scripts/populate_datalake.py --assets 50 --days 252
-
-# Generate and automatically ingest to bronze layer
-python scripts/populate_datalake.py --assets 50 --days 252 --ingest
-```
-
-### Option 2: Fetch Real Market Data
-
-Fetch real stock prices from Yahoo Finance:
-
-```bash
-# Install yfinance (optional, for real data)
-pip install yfinance
-
-# Fetch data for specific tickers
-python scripts/fetch_market_data.py --tickers AAPL MSFT GOOGL AMZN TSLA --days 252
-
-# Fetch and ingest
-python scripts/fetch_market_data.py --tickers AAPL MSFT GOOGL --days 252 --ingest
-```
-
-### Option 3: Use Your Own Data
-
-Place CSV files in `data/raw/` with the following formats:
-
-**prices_demo.csv:**
-```csv
-date,ticker,asset_id,adj_open,adj_close,volume
-2025-01-01,AAPL,AAPL,150.0,151.0,10000000
-```
-
-**esg_demo.csv:**
-```csv
-date,asset_id,provider,esg_raw
-2025-01-01,AAPL,demo,75.5
-```
-
-Then run ingestion:
-```bash
-export $(cat .env | grep -v '^#' | xargs)
-python -m src.ingest.to_bronze
-```
-
-## Testing
-
-Run the test suite:
-```bash
-pytest tests/
-```
-
-## Troubleshooting
-
-### MinIO Issues
-
-- **Container won't start**: Check Docker is running (`docker ps`)
-- **Port conflicts**: Ensure ports 9000 and 9001 are available
-- **Bucket not found**: Create it manually: `docker-compose exec minio mc mb local/lake`
-- **Connection errors**: Verify `.env` has correct `S3_ENDPOINT` and credentials
-
-### Pipeline Issues
-
-- **Missing data**: Ensure raw CSVs exist in `data/raw/`
-- **Schema errors**: Check contract files in `src/contracts/`
-- **Import errors**: Verify virtual environment is activated and dependencies installed
-
-## Development
-
-See per-directory READMEs for module-specific documentation:
-- `src/ingest/README.md` - Data ingestion details
-- `src/features/README.md` - Feature engineering
-- `src/optimize/README.md` - Optimization algorithms
-- `src/backtest/README.md` - Backtesting engine
-- `src/orchestration/README.md` - Workflow orchestration
-
-## Cloud Deployment
-
-For production deployment to AWS, GCP, or Azure, see [CLOUD_DEPLOYMENT.md](CLOUD_DEPLOYMENT.md) for:
-- Infrastructure recommendations (ECS, Cloud Run, etc.)
-- Cost estimates
-- Containerization (Dockerfile included)
-- Prefect Cloud setup
-- Security best practices
-- Scaling strategies
-
-## Next Steps
-
-- [ ] Expand test coverage
-- [ ] Add data validation checks
-- [ ] Implement rebalancing strategies
-- [ ] Add ESG constraint options
-- [ ] Performance monitoring and alerting
+- [Ishaan Tibdewal](https://github.com/ishaantibdewal): led the project as Director of R&D; ESG optimizer, efficient-frontier research and backtest, Streamlit dashboard
+- [jdamani-plus](https://github.com/jdamani-plus), [vaibhavmaloo03](https://github.com/vaibhavmaloo03): data lake pipeline, Docker, API endpoints
+- [Jaivd](https://github.com/Jaivd): integrated the data lake and backtest work
+- [BenZHashim](https://github.com/BenZHashim): FastAPI endpoint, pipeline results
+- [Chrisc1124](https://github.com/Chrisc1124): dashboard polish
