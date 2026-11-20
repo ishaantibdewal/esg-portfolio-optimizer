@@ -15,4 +15,6 @@ yfinance
 requests
 fastapi
 uvicorn[standard]
-streamlit
+streamlitscipy
+altair
+tabulate
